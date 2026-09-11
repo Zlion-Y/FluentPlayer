@@ -73,7 +73,7 @@ function handleLeave() {
         @pointerleave="onUp"
       >
         <div class="volume-fill" :style="{ height: volume + '%' }"></div>
-        <div class="volume-thumb" :style="{ bottom: `calc(${volume}% - 6px)` }"></div>
+        <div class="volume-thumb" :style="{ bottom: `clamp(0px, calc(${volume}% - 6px), calc(100% - 12px))` }"></div>
       </div>
     </div>
     <button class="control-btn volume-btn" title="音量">
@@ -95,7 +95,8 @@ function handleLeave() {
 
 .volume-popup {
   position: absolute;
-  bottom: 100%;
+  /* 抬高弹出条：bottom:100% 时条的底部正好压在顶部进度条上 */
+  bottom: calc(100% + 10px);
   left: 50%;
   transform: translateX(-50%);
   padding-bottom: 8px;
@@ -111,7 +112,8 @@ function handleLeave() {
   backdrop-filter: blur(16px);
   position: relative;
   cursor: pointer;
-  overflow: visible;
+  /* 裁剪填充色到圆角条内，避免 100% 音量时方形上角溢出 */
+  overflow: hidden;
 }
 
 .volume-fill {
@@ -119,7 +121,7 @@ function handleLeave() {
   bottom: 0;
   left: 0;
   right: 0;
-  border-radius: 0 0 14px 14px;
+  border-radius: 0;
   background: var(--fluent-accent);
 }
 
@@ -130,7 +132,8 @@ function handleLeave() {
   width: 12px;
   height: 12px;
   border-radius: 50%;
-  background: #fff;
+  /* 跟随主题文字色：浅色主题下白色滑块在浅色条上不可见 */
+  background: var(--fluent-text);
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.25);
 }
 

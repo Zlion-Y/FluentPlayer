@@ -178,7 +178,10 @@ watch(
 
 const audio = useAudioPlayer({
   audioRef,
-  onEnded: playNext,
+  // 播放结束的自动前进：受「播完就停」模式约束
+  onEnded: () => playNext(false),
+  // 当前歌加载/播放失败时的自动跳歌：同样视为自动前进
+  onPlayError: () => playNext(false),
 })
 
 const lyrics = useLyrics(audio.currentSong)
@@ -235,7 +238,7 @@ function pickRandomIndex(current: number, count: number): number {
   return nextIndex
 }
 
-function playNext() {
+function playNext(manual = true) {
   const count = audio.queue.value.length
   if (count === 0) return
   if (audio.index.value < 0) {
@@ -243,7 +246,8 @@ function playNext() {
     return
   }
   const current = audio.index.value
-  if (playMode.value === 'stop') return
+  // 「播完就停」只拦截自动前进（歌曲结束/失败跳歌），手动点击下一首仍然可用
+  if (playMode.value === 'stop' && !manual) return
 
   let nextIndex = current
   if (playMode.value === 'shuffle') {
@@ -260,7 +264,7 @@ function playNext() {
   audio.playQueueAt(nextIndex)
 }
 
-function playPrev() {
+function playPrev(manual = true) {
   const count = audio.queue.value.length
   if (count === 0) return
   if (audio.index.value < 0) {
@@ -268,7 +272,7 @@ function playPrev() {
     return
   }
   const current = audio.index.value
-  if (playMode.value === 'stop') return
+  if (playMode.value === 'stop' && !manual) return
 
   let prevIndex = current
   if (playMode.value === 'shuffle') {
@@ -515,8 +519,8 @@ onMounted(async () => {
       // ignore
     }
   })
-  offTrayPrev = Events.On('tray:prev', playPrev)
-  offTrayNext = Events.On('tray:next', playNext)
+  offTrayPrev = Events.On('tray:prev', () => playPrev())
+  offTrayNext = Events.On('tray:next', () => playNext())
   offTrayExit = Events.On('tray:exit', handleTrayExit)
 })
 

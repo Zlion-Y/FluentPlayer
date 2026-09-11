@@ -99,7 +99,8 @@ function stopDrag() {
 
 .rate-popup {
   position: absolute;
-  bottom: 100%;
+  /* 同音量弹出条：抬高避免压住顶部进度条 */
+  bottom: calc(100% + 10px);
   right: 0;
   padding-bottom: 8px;
   z-index: 20;

@@ -9,6 +9,8 @@ import { toast } from './useToast'
 interface AudioPlayerOptions {
   audioRef?: Ref<HTMLAudioElement | null>
   onEnded?: () => void
+  /** 当前歌曲加载/播放失败（在线解析失败、本地文件损坏等）时触发，用于自动切到下一首。 */
+  onPlayError?: () => void
 }
 
 export function useAudioPlayer(options: AudioPlayerOptions = {}) {
@@ -34,7 +36,35 @@ export function useAudioPlayer(options: AudioPlayerOptions = {}) {
   // 上下文标签（用于展示/恢复），不再用于队列导航
   const playlistId = ref<string | null>(null)
 
+  // 播放会话令牌：每次 playLocal 递增。快速切歌时，旧歌残留的异步回调
+  // （解析结果 / play() 完成或失败）通过比对令牌被丢弃，不再污染新歌状态。
+  let playToken = 0
+  // 当前 token 的失败只处理一次（play() 拒绝与 error 事件可能同时到来）
+  let failureHandledToken = -1
+  // 连续失败计数：整队失败时停止自动跳歌，避免死循环刷接口
+  let consecutiveFailures = 0
+  // 当前 token 是否已成功出过声（用于区分“播放中途流断开”与“起播即失败”）
+  let currentPlaySucceeded = false
+
   const hasSong = computed(() => currentSong.value !== null)
+
+  /** 当前歌曲播放失败：节流后回调自动跳下一首。 */
+  function handlePlayFailure(token: number) {
+    if (token !== playToken || failureHandledToken === token) return
+    failureHandledToken = token
+    isLoading.value = false
+    isPlaying.value = false
+    consecutiveFailures += 1
+    const cap = Math.max(1, Math.min(5, queue.value.length))
+    if (!options.onPlayError) return
+    if (consecutiveFailures > cap) {
+      if (consecutiveFailures === cap + 1) {
+        toast(`连续 ${cap} 首播放失败，已停止自动切歌`, 'warning')
+      }
+      return
+    }
+    options.onPlayError()
+  }
 
   async function loadCover(path: string) {
     const override = localMetadata.value[path]?.cover
@@ -56,6 +86,8 @@ export function useAudioPlayer(options: AudioPlayerOptions = {}) {
   // 播放歌曲（本地文件或在线歌曲）
   async function playLocal(song: Song, autoPlay = true) {
     // 切换歌曲：先清空上一首的播放状态（进度/时长），并进入加载态
+    const token = ++playToken
+    currentPlaySucceeded = false
     currentSong.value = song
     currentTime.value = 0
     duration.value = song.metadata?.duration || 0
@@ -67,38 +99,41 @@ export function useAudioPlayer(options: AudioPlayerOptions = {}) {
       coverUrl.value = song.cover ?? null
       if (!coverUrl.value) {
         resolveOnlinePic(song.online).then((url) => {
-          if (currentSong.value?.id === song.id && url) coverUrl.value = url
+          if (token === playToken && currentSong.value?.id === song.id && url) coverUrl.value = url
         })
       }
       await nextTick()
-      if (!audioRef.value) return
+      if (token !== playToken || !audioRef.value) return
       try {
         const { url, quality } = await resolveOnlineUrl(song.online)
         // 解析期间用户可能已切歌
-        if (currentSong.value?.id !== song.id || !audioRef.value) return
+        if (token !== playToken || currentSong.value?.id !== song.id || !audioRef.value) return
         activeQuality.value = quality
         audioRef.value.src = url
         audioRef.value.load()
         audioRef.value.playbackRate = playbackRate.value
         if (autoPlay) {
           await audioRef.value.play()
+          if (token !== playToken) return
           isPlaying.value = true
         } else {
           isPlaying.value = false
         }
         // 加载态在音频真正可播放（canplay/playing）时由 bindAudioEvents 清除
       } catch (err) {
+        // 切歌引发的 abort / 过期失败：不提示、不跳歌、不清新歌的加载态
+        if (token !== playToken) return
         const msg = (err as Error).message || ''
-        isLoading.value = false
-        isPlaying.value = false
         const noSource = msg.includes('没有可用的自定义音源') || msg.includes('noEnabled')
         if (noSource) {
           // 仅提示，不再强制跳转音源界面（避免有音源或初始化期间误跳）。
           // 用户可在在线页面右上角「音源」自行导入。
           toast('没有可用的自定义音源，请在在线页面右上角「音源」中导入音源脚本', 'warning')
         } else {
-          toast(`在线播放失败：${msg}`, 'error')
+          toast(autoPlay ? `在线播放失败，已自动切换：${msg}` : `在线加载失败：${msg}`, 'error')
         }
+        if (autoPlay) handlePlayFailure(token)
+        else isLoading.value = false
       }
       return
     }
@@ -106,22 +141,26 @@ export function useAudioPlayer(options: AudioPlayerOptions = {}) {
     activeQuality.value = null
     await loadCover(song.path)
     await nextTick()
-    if (!audioRef.value) return
+    if (token !== playToken || !audioRef.value) return
     try {
       audioRef.value.src = AudioSrc(song.path)
       audioRef.value.load()
       audioRef.value.playbackRate = playbackRate.value
       if (autoPlay) {
         await audioRef.value.play()
+        if (token !== playToken) return
         isPlaying.value = true
       } else {
         isPlaying.value = false
       }
     } catch {
-      isPlaying.value = false
+      // 本地文件缺失 / 损坏：旧实现静默吞掉导致“切歌没反应”，这里自动跳下一首
+      if (token !== playToken) return
+      if (autoPlay) handlePlayFailure(token)
+      else { isPlaying.value = false; isLoading.value = false }
     } finally {
       // 本地文件：play() 完成后即结束加载态（缓冲事件会继续由 canplay 处理）
-      if (audioRef.value && audioRef.value.readyState >= 3) isLoading.value = false
+      if (token === playToken && audioRef.value && audioRef.value.readyState >= 3) isLoading.value = false
     }
   }
 
@@ -130,11 +169,13 @@ export function useAudioPlayer(options: AudioPlayerOptions = {}) {
     setPreferredQuality(q)
     const song = currentSong.value
     if (!song?.online || !audioRef.value) return
+    const token = playToken
     const keepTime = audioRef.value.currentTime
     const wasPlaying = isPlaying.value
     try {
       const { url, quality } = await resolveOnlineUrl(song.online)
-      if (currentSong.value?.id !== song.id || !audioRef.value) return
+      // 解析期间用户切歌则丢弃结果，避免旧直链覆盖新歌
+      if (token !== playToken || currentSong.value?.id !== song.id || !audioRef.value) return
       activeQuality.value = quality
       audioRef.value.src = url
       audioRef.value.load()
@@ -145,6 +186,7 @@ export function useAudioPlayer(options: AudioPlayerOptions = {}) {
         isPlaying.value = true
       }
     } catch (err) {
+      if (token !== playToken) return
       toast(`切换音质失败：${(err as Error).message || ''}`, 'error')
     }
   }
@@ -254,8 +296,18 @@ export function useAudioPlayer(options: AudioPlayerOptions = {}) {
     audio.addEventListener('pause', () => { isPlaying.value = false })
     // 音频缓冲就绪：清除加载态（在线直链解析完成 / 本地缓冲完成）
     audio.addEventListener('canplay', () => { isLoading.value = false })
-    audio.addEventListener('playing', () => { isLoading.value = false })
-    audio.addEventListener('error', () => { isLoading.value = false })
+    audio.addEventListener('playing', () => {
+      isLoading.value = false
+      // 成功出声：重置连续失败计数，当前 token 视为已成功起播
+      consecutiveFailures = 0
+      currentPlaySucceeded = true
+    })
+    audio.addEventListener('error', () => {
+      isLoading.value = false
+      // 起播阶段的失败由 playLocal 的 play() 拒绝路径处理；
+      // 这里只处理“播放中途流断开/链接失效”：确属当前歌且已成功出过声才自动跳下一首。
+      if (currentPlaySucceeded && options.onPlayError) handlePlayFailure(playToken)
+    })
   }
 
   onMounted(() => {
