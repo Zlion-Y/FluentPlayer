@@ -1,6 +1,6 @@
 <script lang="ts" setup>
-import wechat from '../assets/wechat.jpg'
-import alipay from '../assets/alipay.jpg'
+import wechat from '../assets/sponsor-wechat.png'
+import alipay from '../assets/sponsor-alipay.png'
 </script>
 
 <template>
